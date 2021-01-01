@@ -5,8 +5,8 @@ Se encuentra en conjunto de datos original **dataR2.csv**, el cual es el dataset
 
 Los archivos de programación serían:
 
-      1- **app_shiny.R**: en el cual se encuentra todo el código generado hasta la fecha relativa al dashboard 
-      2- **TFMNotebook.Rmd**: la cual es la libreta donde se han ejecutado todos los experimentos  llevados a cabo en este TFM
+      1- app_shiny.R: en el cual se encuentra todo el código generado hasta la fecha relativa al dashboard 
+      2- TFMNotebook.Rmd: la cual es la libreta donde se han ejecutado todos los experimentos  llevados a cabo en este TFM
       
 Encontramos una serie de carpetas donde se almacena la siguiente información:
 
