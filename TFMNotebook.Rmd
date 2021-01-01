@@ -1,0 +1,564 @@
+---
+title: "TFM Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+Carga de los datos y librerias
+
+```{r}
+library("Hmisc")
+library(corrplot)
+library(caret)
+library(tidyverse)
+library(ggplot2)
+library(AppliedPredictiveModeling)
+library(randomForest)
+library(C50)
+library(gbm)
+library(caretEnsemble)
+
+coimbra_data=read.csv(file = 'dataR2.csv')
+head(coimbra_data)
+```
+A continuación hacemos una exploración de los datos general
+```{r}
+summary(coimbra_data)
+str(coimbra_data)
+table(coimbra_data$Classification)
+```
+Estudiamos y graficamos la distribución de los datos con respecto a la variable objetivo
+```{r}
+coimbra_bar<-coimbra_data
+coimbra_bar$Classification=unlist(lapply(coimbra_bar$Classification, function(x) ifelse(x==1,'sano','enfermo') ))
+g <- ggplot(coimbra_bar, aes(Classification, fill=Classification))+ labs(
+                      y="Cantidad", x = "Estado",fill = "Estado")
+# Number of cars in each class:
+g + geom_bar()
+```
+
+Graficamos valores extremos
+```{r}
+
+for (val in names(coimbra_data[, 0:9])){
+  boxplot(coimbra_data[val][coimbra_data$Classification == 2,],coimbra_data[val][coimbra_data$Classification == 1,], names=c('enfermos','sanos'))
+  title(val)
+}
+
+```
+Usamos el siguiente fragmento de código para generar las gráficas de densidad y dispersion
+```{r}
+val=names(coimbra_bar[, 0:9])
+coimbra_bar$Classification<-as.factor(coimbra_bar$Classification)
+i=9
+p<-ggplot(coimbra_bar, aes(x=eval(as.symbol(val[i])), fill=Classification)) +
+    geom_density(position="identity", alpha=0.5)+ labs(
+                      y="Densidad", x = val[i],fill = "Estado")
+
+
+png(paste(val[i],'.png',sep=''))
+p
+dev.off() 
+p<-ggplot(coimbra_bar, aes(x=Classification, y=eval(as.symbol(val[i])), color=Classification)) +
+    geom_boxplot()+ labs(
+                      y="Distribución", x = val[i],color = "Estado")
+png(paste(val[i],'b.png',sep=''))
+
+p
+dev.off() 
+```
+
+Calculamos la correlación entre variables no objetivo
+```{r}
+correlacion <- rcorr(as.matrix(coimbra_data[, 0:9]))
+
+corrplot(correlacion$r, type="upper", order="hclust", 
+         p.mat = correlacion$P, sig.level = 0.01, insig = "blank")
+```
+Construyo el pairplot apra estudiar ambas variables
+```{r}
+my_cols <- c("#00AFBB", "#E7B800")  
+pairs(coimbra_data[, 0:9], pch = 19,  cex = 0.5,
+      col = my_cols[coimbra_data$Classification],
+      lower.panel=NULL)
+```
+Realizamos el pair plot por categoria y lo enviamos a un pdf por temas de visualización
+```{r}
+# Correlation panel
+panel.cor <- function(x, y){
+    usr <- par("usr"); on.exit(par(usr))
+    par(usr = c(0, 1, 0, 1))
+    r <- round(cor(x, y), digits=2)
+    txt <- paste0("R = ", r)
+    cex.cor <- 0.8/strwidth(txt)
+    text(0.5, 0.5, txt, cex = cex.cor * r)
+}
+# Customize upper panel
+my_cols <- c("#00AFBB", "#E7B800") 
+upper.panel<-function(x, y){
+  points(x,y, pch = 19,  cex = 0.5, col = my_cols[coimbra_data$Classification])
+}
+# Create the plots
+
+pdf(file = "yourPlots.pdf")
+
+
+pairs(coimbra_data[, 0:9], 
+      lower.panel = panel.cor,
+      upper.panel = upper.panel)
+dev.off()  # important!
+```
+Creamos los 3 conjuntos de datos qeu vana  ser tomados en consideración
+```{r}
+coimbra_data$Classification=unlist(lapply(coimbra_data$Classification, function(x) ifelse(x==1,'sano','enfermo') ))
+coimbra_data$Classification=as.factor(coimbra_data$Classification)
+coimbra_9_orig<-coimbra_data
+coimbra_4_orig<-coimbra_data %>% select('Age', 'BMI', 'Glucose', 'Resistin','Classification')
+
+```
+
+Creamos un conjunto derivado de la aplicación de técnicas de reducción de la dimensionalidad a partir del dataset de 9 original
+```{r}
+coimbra.pca <- prcomp(coimbra_9_orig[-10], scale=T)
+coimbra.pca
+summary(coimbra.pca)
+plot(coimbra.pca,type="lines")
+coimbra_PCA=as.data.frame((coimbra.pca$x))
+coimbra_PCA=coimbra_PCA[,0:6]
+coimbra_PCA$Classification=coimbra_9_orig$Classification
+```
+
+Partimos los datos para el proceso de aprendizaje en los 6 datasets finales
+```{r}
+
+set.seed(998)
+inTraining <- createDataPartition(coimbra_9_orig$Classification, p = .70, list = FALSE)
+Coimbra_train_9 <- coimbra_9_orig[ inTraining,]
+Coimbra_test_9  <- coimbra_9_orig[-inTraining,]
+
+inTraining <- createDataPartition(coimbra_4_orig$Classification, p = .70, list = FALSE)
+Coimbra_train_4 <- coimbra_4_orig[ inTraining,]
+Coimbra_test_4  <- coimbra_4_orig[-inTraining,]
+
+inTraining <- createDataPartition(coimbra_PCA$Classification, p = .70, list = FALSE)
+Coimbra_train_PCA <- coimbra_PCA[ inTraining,]
+Coimbra_test_PCA <- coimbra_PCA[-inTraining,]
+```
+
+Creamos la línea base con los modelos inciales para árboles de decisión
+Modelos base
+```{r}
+DT_base_9<-C5.0(x = Coimbra_train_9[-10], y = Coimbra_train_9$Classification)
+DT_base_9_pred <- predict(DT_base_9, Coimbra_test_9[-10])
+
+confusionMatrix(data = as.factor(DT_base_9_pred), reference = as.factor(Coimbra_test_9$Classification))
+```
+```{r}
+DT_base_4<-C5.0(x = Coimbra_train_4[-5], y = Coimbra_train_4$Classification)
+DT_base_4_pred <- predict(DT_base_4, Coimbra_test_4[-5])
+
+confusionMatrix(data = as.factor(DT_base_4_pred), reference = as.factor(Coimbra_test_4$Classification))
+```
+```{r}
+DT_base_PCA<-C5.0(x = Coimbra_train_PCA[-7], y = Coimbra_train_PCA$Classification)
+DT_base_PCA_pred <- predict(DT_base_PCA, Coimbra_test_PCA[-7])
+
+confusionMatrix(data = as.factor(DT_base_PCA_pred), reference = as.factor(Coimbra_test_PCA$Classification))
+```
+Modelos Optimos de Árboles de decisión
+```{r}
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv", classProbs = TRUE,
+                     summaryFunction = twoClassSummary,number=5,repeats=10,search='grid')
+grid <- expand.grid( .winnow = c(TRUE,FALSE), .trials=1, .model=c("tree","rules") )
+```
+
+
+
+
+```{r}
+DT_Optim_9 <- train(Coimbra_train_9[-10],as.factor(Coimbra_train_9$Classification), 
+                 method ='C5.0', 
+                 trControl = fitControl,
+                 metric='ROC',
+                 tuneGrid=grid,
+                 ## This last option is actually one
+                 ## for gbm() that passes through
+                 verbose = FALSE)
+
+
+DT_Optim_9_pred <- predict(DT_Optim_9, Coimbra_test_9[-10])
+
+
+DT_Optim_9
+
+confusionMatrix(data = as.factor(DT_Optim_9_pred), reference = as.factor(Coimbra_test_9$Classification))
+
+```
+```{r}
+DT_Optim_4 <- train(Coimbra_train_4[-5],as.factor(Coimbra_train_4$Classification), 
+                 method ='C5.0', 
+                 trControl = fitControl,
+                 metric='ROC',
+                 tuneGrid=grid,
+                 ## This last option is actually one
+                 ## for gbm() that passes through
+                 verbose = FALSE)
+
+
+DT_Optim_4_pred <- predict(DT_Optim_4, Coimbra_test_4[-5])
+
+
+DT_Optim_4
+
+confusionMatrix(data = as.factor(DT_Optim_4_pred), reference = as.factor(Coimbra_test_4$Classification))
+
+```
+```{r}
+DT_Optim_PCA <- train(Coimbra_train_PCA[-7],as.factor(Coimbra_train_PCA$Classification), 
+                 method ='C5.0', 
+                 trControl = fitControl,
+                 metric='ROC',
+                 tuneGrid=grid,
+                 ## This last option is actually one
+                 ## for gbm() that passes through
+                 verbose = FALSE)
+
+
+DT_Optim_PCA_pred <- predict(DT_Optim_PCA, Coimbra_test_PCA[-7])
+
+
+DT_Optim_PCA
+
+confusionMatrix(data = as.factor(DT_Optim_PCA_pred), reference = as.factor(Coimbra_test_PCA$Classification))
+
+```
+Modelo base para random forest
+
+```{r}
+set.seed(400)
+RF_base_9<-randomForest(x = Coimbra_train_9[-10], y = Coimbra_train_9$Classification)
+
+
+RF_base_9_pred <- predict(RF_base_9, Coimbra_test_9[-10])
+
+confusionMatrix(data = as.factor(RF_base_9_pred), reference = as.factor(Coimbra_test_9$Classification))
+```
+```{r}
+set.seed(400)
+RF_base_4<-randomForest(x = Coimbra_train_4[-5], y = Coimbra_train_4$Classification)
+
+
+RF_base_4_pred <- predict(RF_base_4, Coimbra_test_4[-5])
+
+confusionMatrix(data = as.factor(RF_base_4_pred), reference = as.factor(Coimbra_test_4$Classification))
+```
+```{r}
+set.seed(400)
+RF_base_PCA<-randomForest(x = Coimbra_train_PCA[-7], y = Coimbra_train_PCA$Classification)
+
+
+RF_base_PCA_pred <- predict(RF_base_PCA, Coimbra_test_PCA[-7])
+
+confusionMatrix(data = as.factor(RF_base_PCA_pred), reference = as.factor(Coimbra_test_PCA$Classification))
+```
+Modelos Optimos de Random Forest
+```{r}
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv", classProbs = TRUE,
+                     summaryFunction = twoClassSummary,number=5,repeats=10,search='grid')
+grid <- expand.grid( .mtry = c(1,2,3,4
+                               ,5,6,7,8,9))
+```
+
+```{r}
+set.seed(400)
+modellist <- list()
+for (ntree in c(500,1000,1500,2000,2500)){
+  RF_Optim_9 <- train(Coimbra_train_9[-10],as.factor(Coimbra_train_9$Classification), 
+                   method ='rf', 
+                   trControl = fitControl,
+                   metric='ROC',
+                   tuneGrid=grid,
+                   ntree=ntree,
+                   ## This last option is actually one
+                   ## for gbm() that passes through
+                   verbose = FALSE)
+  key <- toString(ntree)
+  modellist[[key]] <- RF_Optim_9
+}
+results <- resamples(modellist)
+summary(results)
+
+```
+```{r}
+set.seed(400)
+#Me quedo con el valor de ntree que mejores resultados haya obtenido antes
+RF_Optim_9 <- train(Coimbra_train_9[-10],as.factor(Coimbra_train_9$Classification), 
+                   method ='rf', 
+                   trControl = fitControl,
+                   metric='ROC',
+                   tuneGrid=grid,
+                   ntree=500,
+                   ## This last option is actually one
+                   ## for gbm() that passes through
+                   verbose = FALSE)
+RF_Optim_9_pred <- predict(RF_Optim_9, Coimbra_test_9[-10])
+
+RF_Optim_9
+
+
+confusionMatrix(data = as.factor(RF_Optim_9_pred), reference = as.factor(Coimbra_test_9$Classification))
+```
+```{r}
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv", classProbs = TRUE,
+                     summaryFunction = twoClassSummary,number=5,repeats=10,search='grid')
+grid <- expand.grid( .mtry = c(1,2,3,4))
+```
+
+```{r}
+set.seed(400)
+modellist <- list()
+#Me quedo con el valor de ntree que mejores resultados haya obtenido antes
+for (ntree in c(500,1000,1500,2000,2500)){
+  RF_Optim_4 <- train(Coimbra_train_4[-5],as.factor(Coimbra_train_4$Classification), 
+                   method ='rf', 
+                   trControl = fitControl,
+                   metric='ROC',
+                   tuneGrid=grid,
+                   ntree=ntree,
+                   ## This last option is actually one
+                   ## for gbm() that passes through
+                   verbose = FALSE)
+  key <- toString(ntree)
+  modellist[[key]] <- RF_Optim_4
+}
+results <- resamples(modellist)
+summary(results)
+
+```
+```{r}
+set.seed(400)
+RF_Optim_4 <- train(Coimbra_train_4[-5],as.factor(Coimbra_train_4$Classification), 
+                   method ='rf', 
+                   trControl = fitControl,
+                   metric='ROC',
+                   tuneGrid=grid,
+                   ntree=1500,
+                   ## This last option is actually one
+                   ## for gbm() that passes through
+                   verbose = FALSE)
+RF_Optim_4_pred <- predict(RF_Optim_4, Coimbra_test_4[-5])
+
+RF_Optim_4
+
+
+confusionMatrix(data = as.factor(RF_Optim_4_pred), reference = as.factor(Coimbra_test_4$Classification))
+```
+```{r}
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv", classProbs = TRUE,
+                     summaryFunction = twoClassSummary,number=5,repeats=10,search='grid')
+grid <- expand.grid( .mtry = c(1,2,3,4
+                               ,5,6))
+```
+
+```{r}
+set.seed(400)
+modellist <- list()
+for (ntree in c(500,1000,1500,2000,2500)){
+  RF_Optim_PCA <- train(Coimbra_train_PCA[-7],as.factor(Coimbra_train_PCA$Classification), 
+                   method ='rf', 
+                   trControl = fitControl,
+                   metric='ROC',
+                   tuneGrid=grid,
+                   ntree=ntree,
+                   ## This last option is actually one
+                   ## for gbm() that passes through
+                   verbose = FALSE)
+  key <- toString(ntree)
+  modellist[[key]] <- RF_Optim_PCA
+}
+results <- resamples(modellist)
+summary(results)
+
+```
+```{r}
+set.seed(400)
+#Me quedo con el valor de ntree que mejores resultados haya obtenido antes
+RF_Optim_PCA <- train(Coimbra_train_PCA[-7],as.factor(Coimbra_train_PCA$Classification), 
+                   method ='rf', 
+                   trControl = fitControl,
+                   metric='ROC',
+                   tuneGrid=grid,
+                   ntree=2000,
+                   ## This last option is actually one
+                   ## for gbm() that passes through
+                   verbose = FALSE)
+RF_Optim_PCA_pred <- predict(RF_Optim_PCA, Coimbra_test_PCA[-7])
+
+RF_Optim_PCA
+
+
+confusionMatrix(data = as.factor(RF_Optim_PCA_pred), reference = as.factor(Coimbra_test_PCA$Classification))
+```
+Modelo base para GBM
+
+```{r}
+fitControl <- trainControl(## 10-fold CV
+                           method = "none", classProbs = TRUE,
+                     summaryFunction = twoClassSummary,search='grid')
+gbmGrid <-  expand.grid(interaction.depth = c(1), 
+                        n.trees = 100, 
+                        shrinkage = 0.1,
+                        n.minobsinnode = 10)
+```
+
+```{r}
+set.seed(400)
+GBM_base_9 <- train(Coimbra_train_9[-10], Coimbra_train_9$Classification, 
+                 method = "gbm", 
+                 trControl = fitControl,
+                 tuneGrid = gbmGrid,
+                 metric='ROC',
+                 ## This last option is actually one
+                 ## for gbm() that passes through
+                 verbose = FALSE)
+GBM_base_9
+GBM_base_9_pred <- predict(GBM_base_9, Coimbra_test_9[-10])
+
+confusionMatrix(data = as.factor(GBM_base_9_pred), reference = as.factor(Coimbra_test_9$Classification))
+```
+```{r}
+set.seed(400)
+GBM_base_4 <- train(Coimbra_train_4[-5], Coimbra_train_4$Classification, 
+                 method = "gbm", 
+                 trControl = fitControl,
+                 tuneGrid = gbmGrid,
+                 ## This last option is actually one
+                 ## for gbm() that passes through
+                 verbose = FALSE)
+GBM_base_4
+GBM_base_4_pred <- predict(GBM_base_4, Coimbra_test_4[-5])
+
+confusionMatrix(data = as.factor(GBM_base_4_pred), reference = as.factor(Coimbra_test_4$Classification))
+```
+```{r}
+set.seed(400)
+GBM_base_PCA <- train(Coimbra_train_PCA[-7], Coimbra_train_PCA$Classification, 
+                 method = "gbm", 
+                 trControl = fitControl,
+                 tuneGrid = gbmGrid,
+                 ## This last option is actually one
+                 ## for gbm() that passes through
+                 verbose = FALSE)
+GBM_base_PCA
+GBM_base_PCA_pred <- predict(GBM_base_PCA, Coimbra_test_PCA[-7])
+
+confusionMatrix(data = as.factor(GBM_base_PCA_pred), reference = as.factor(Coimbra_test_PCA$Classification))
+```
+
+
+Modelos Optimos de GBM
+```{r}
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv", classProbs = TRUE,
+                     summaryFunction = twoClassSummary,number=5, repeats=10,search='grid')
+gbmGrid <-  expand.grid(interaction.depth = c(1, 5, 9), 
+                        n.trees = c(100,200,300,400,500), 
+                        shrinkage = c(0.1,0.3,0.5,0.7,0.9),
+                        n.minobsinnode = c(3,6,10))
+```
+```{r}
+set.seed(400)
+GBM_optim_9 <- train(Coimbra_train_9[-10], Coimbra_train_9$Classification, 
+                 method = "gbm", 
+                 trControl = fitControl,
+                 tuneGrid = gbmGrid,
+                 metric='ROC',
+                 ## This last option is actually one
+                 ## for gbm() that passes through
+                 verbose = FALSE)
+GBM_optim_9
+GBM_optim_9_pred <- predict(GBM_optim_9, Coimbra_test_9[-10])
+
+confusionMatrix(data = as.factor(GBM_optim_9_pred), reference = as.factor(Coimbra_test_9$Classification))
+```
+```{r}
+set.seed(400)
+GBM_optim_4 <- train(Coimbra_train_4[-5], Coimbra_train_4$Classification, 
+                 method = "gbm", 
+                 trControl = fitControl,
+                 tuneGrid = gbmGrid,
+                 metric='ROC',
+                 ## This last option is actually one
+                 ## for gbm() that passes through
+                 verbose = FALSE)
+GBM_optim_4
+GBM_optim_4_pred <- predict(GBM_optim_4, Coimbra_test_4[-5])
+
+confusionMatrix(data = as.factor(GBM_optim_4_pred), reference = as.factor(Coimbra_test_4$Classification))
+```
+```{r}
+set.seed(400)
+GBM_optim_PCA <- train(Coimbra_train_PCA[-7], Coimbra_train_PCA$Classification, 
+                 method = "gbm", 
+                 trControl = fitControl,
+                 tuneGrid = gbmGrid,
+                 metric='ROC',
+                 ## This last option is actually one
+                 ## for gbm() that passes through
+                 verbose = FALSE)
+GBM_optim_PCA
+GBM_optim_PCA_pred <- predict(GBM_optim_PCA, Coimbra_test_PCA[-7])
+
+confusionMatrix(data = as.factor(GBM_optim_PCA_pred), reference = as.factor(Coimbra_test_PCA$Classification))
+```
+Guardamos los modelso óptimos obtenidos para su posterior utilización en el dashboard
+```{r}
+saveRDS(DT_Optim_9, "modelos9/DT.rds")
+saveRDS(RF_Optim_9, "modelos9/RF.rds")
+saveRDS(GBM_optim_9, "modelos9/GBT.rds")
+
+saveRDS(DT_Optim_4, "modelos4/DT.rds")
+saveRDS(RF_Optim_4, "modelos4/RF.rds")
+saveRDS(GBM_optim_4, "modelos4/GBT.rds")
+
+saveRDS(DT_Optim_PCA, "modelosPCA/DT.rds")
+saveRDS(RF_Optim_PCA, "modelosPCA/RF.rds")
+saveRDS(GBM_optim_PCA, "modelosPCA/GBT.rds")
+
+```
+
+Obtenemos la métrica de selección de modelo óptimo y su desviación estándar de cara a poder realizar  la compración de los modelos
+```{r}
+getMetric(DT_Optim_9)
+getMetric(RF_Optim_9)
+getMetric(GBM_optim_9)
+
+getMetricSD(DT_Optim_9, metric='ROC')
+getMetricSD(RF_Optim_9, metric='ROC')
+getMetricSD(GBM_optim_9, metric='ROC')
+
+getMetric(DT_Optim_4)
+getMetric(RF_Optim_4)
+getMetric(GBM_optim_4)
+
+getMetricSD(DT_Optim_4, metric='ROC')
+getMetricSD(RF_Optim_4, metric='ROC')
+getMetricSD(GBM_optim_4, metric='ROC')
+
+getMetric(DT_Optim_PCA)
+getMetric(RF_Optim_PCA)
+getMetric(GBM_optim_PCA)
+
+getMetricSD(DT_Optim_PCA, metric='ROC')
+getMetricSD(RF_Optim_PCA, metric='ROC')
+getMetricSD(GBM_optim_PCA, metric='ROC')
+```
+
+
+
+
