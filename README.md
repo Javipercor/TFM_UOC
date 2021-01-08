@@ -15,8 +15,7 @@ Encontramos una serie de carpetas donde se almacena la siguiente información:
             -Modelos9
             -ModelosPCA
       2. Carpeta gráficas: donde se almacenan todas las gráficas generadas para la exploración de los datos y que han sido añadidas a la memoria
-      3. Memoria: Carpeta donde se encuentra en formato pdf la última versión de la memoria
-      4. Archivos Importados Shiny: donde se almacenan los csv importados mediante el dashboard
+      3. Archivos Importados Shiny: donde se almacenan los csv importados mediante el dashboard
 
 
 
